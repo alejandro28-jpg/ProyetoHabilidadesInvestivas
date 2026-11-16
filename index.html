@@ -104,4 +104,262 @@ footer{padding:0 20px 30px;font-size:.85rem;color:var(--mute)}
 <div class="panel">
 <h2 id="t-muni" style="margin:0 0 12px"></h2>
 <div class="resultado">
-<div class="semaforo" aria-hidden="true"><div class="luz l-alto" id="s-alto"></div><div class="luz l-mod"
+<div class="semaforo" aria-hidden="true"><div class="luz l-alto" id="s-alto"></div><div class="luz l-mod" id="s-mod"></div><div class="luz l-bajo" id="s-bajo"></div></div>
+<div>
+<p class="nivel" id="nivel"></p>
+<p id="nota-escalon" class="ayuda" style="margin:4px 0 0"></p>
+<div class="cifras">
+<div class="cifra"><b id="c-p30"></b><span>Lluvia, 30 días (mm)</span></div>
+<div class="cifra"><b id="c-anom"></b><span>Anomalía de lluvia</span></div>
+<div class="cifra"><b id="c-secos"></b><span>Días secos consecutivos</span></div>
+<div class="cifra"><b id="c-tmax"></b><span>Anomalía de Tmax (°C)</span></div>
+</div>
+<p class="leyenda" id="actualizacion"></p>
+</div></div>
+<div id="graf" class="hidden">
+<div class="barras" id="barras" aria-label="Lluvia diaria de los últimos 30 días"></div>
+<p class="leyenda">Lluvia diaria. Marrón: día seco (menos de 1 mm). Rayado: sin datos.</p>
+</div>
+<ul class="avisos" id="avisos"></ul>
+</div>
+
+<div class="panel">
+<h3 style="margin:0 0 6px">Comparación con el boletín del IDEAM</h3>
+<p class="ayuda">El IDEAM no ofrece el boletín por API. Elige el nivel que aparece allí para este municipio.</p>
+<div class="fila">
+<label>Nivel en el boletín<select id="boletin"><option value="">Elige un nivel</option><option value="0">Bajo</option><option value="1">Moderado</option><option value="2">Alto</option></select></label>
+<p id="veredicto"></p>
+</div>
+</div>
+
+<div class="panel"><details><summary>Ver el detalle del cálculo</summary><pre id="detalle"></pre></details></div>
+</section>
+</main>
+<footer>Prototipo académico. Estima amenaza climática, no riesgo, y no reemplaza las alertas oficiales del IDEAM. Los datos de estaciones automáticas no están validados por el IDEAM.</footer>
+
+<script>
+const CFG = {
+  base: "https://www.datos.gov.co/resource/",
+  precip: "s54a-sgyg", temp: "sbwg-7ju4", catalogo: "hp9r-jxuu", depto: "CUNDINAMARCA",
+  ventana: 30, ventanaT: 7, anios: 5, umbralSeco: 1, racha: "vigente", minCobertura: 20, minCoberturaT: 4
+};
+const NIVELES = ["Bajo", "Moderado", "Alto"];
+const $ = id => document.getElementById(id);
+const aDate = s => new Date(s + "T00:00:00Z");
+const aStr = d => d.toISOString().slice(0, 10);
+const sumaDias = (s, n) => { const d = aDate(s); d.setUTCDate(d.getUTCDate() + n); return aStr(d); };
+const cambiaAnio = (s, k) => { const d = aDate(s); d.setUTCFullYear(d.getUTCFullYear() + k); return aStr(d); };
+const media = a => a.reduce((x, y) => x + y, 0) / a.length;
+const suma = a => a.reduce((x, y) => x + y, 0);
+
+/* ===== Regla de negocio ===== */
+function nivelAmenaza(anom, secos, anomT) {
+  let n = 0;
+  if (anom <= -50 && secos >= 15) n = 2;
+  else if (anom <= -25 || secos >= 8) n = 1;
+  const base = n;
+  if (anomT >= 2) n = Math.min(n + 1, 2);
+  return { nivel: n, base, escalo: n > base };
+}
+
+/* ===== Datos en línea (datos.gov.co) ===== */
+async function soda(ds, params, ms = 20000) {
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), ms);
+  try {
+    const r = await fetch(CFG.base + ds + ".json?" + new URLSearchParams(params), { signal: ctl.signal });
+    if (!r.ok) throw new Error("La API respondió " + r.status + ". Revisa los nombres de columnas del dataset.");
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
+const esc = t => t.replace(/'/g, "''");
+const filtroMuni = m => `upper(departamento)='${CFG.depto}' AND upper(municipio)='${esc(m.toUpperCase())}'`;
+
+async function diario(ds, fn, muni, desde, hasta) {
+  const where = `${filtroMuni(muni)} AND fechaobservacion >= '${desde}T00:00:00' AND fechaobservacion < '${sumaDias(hasta, 1)}T00:00:00'`;
+  const filas = await soda(ds, { "$select": `codigoestacion, date_trunc_ymd(fechaobservacion) as dia, ${fn}(valorobservado) as v`, "$where": where, "$group": "codigoestacion, dia", "$limit": "50000" });
+  const por = {};
+  for (const f of filas) { const v = parseFloat(f.v); if (!isNaN(v)) (por[f.dia.slice(0, 10)] ||= []).push(v); }
+  const out = new Map(); for (const d in por) out.set(d, media(por[d])); return out;
+}
+
+function rachaSecos(mapa, ref) {
+  const dias = [...Array(CFG.ventana)].map((_, i) => sumaDias(ref, -(CFG.ventana - 1 - i)));
+  if (CFG.racha === "vigente") {
+    let c = 0;
+    for (let i = dias.length - 1; i >= 0; i--) { const v = mapa.get(dias[i]); if (v === undefined || v >= CFG.umbralSeco) break; c++; }
+    return c;
+  }
+  let max = 0, c = 0;
+  for (const d of dias) { const v = mapa.get(d); if (v !== undefined && v < CFG.umbralSeco) { c++; max = Math.max(max, c); } else c = 0; }
+  return max;
+}
+
+async function calcularEnLinea(muni, fechaIn) {
+  const avisos = [];
+  const ult = await soda(CFG.precip, { "$select": "max(fechaobservacion) as m", "$where": filtroMuni(muni) });
+  if (!ult[0] || !ult[0].m) throw new Error("No hay datos de precipitación para «" + muni + "». Puede que no tenga estación.");
+  let ref = ult[0].m.slice(0, 10);
+  if (fechaIn && fechaIn < ref) ref = fechaIn;
+  if (ref < sumaDias(aStr(new Date()), -3)) avisos.push("El dato más reciente es del " + ref + ". El cálculo usa esa fecha, no la de hoy.");
+  const ini = sumaDias(ref, -(CFG.ventana - 1)), iniT = sumaDias(ref, -(CFG.ventanaT - 1));
+  const ks = [...Array(CFG.anios)].map((_, i) => i + 1);
+  const [lluvia, tm, hl, ht] = await Promise.all([
+    diario(CFG.precip, "sum", muni, ini, ref),
+    diario(CFG.temp, "max", muni, iniT, ref),
+    Promise.all(ks.map(k => diario(CFG.precip, "sum", muni, cambiaAnio(ini, -k), cambiaAnio(ref, -k)))),
+    Promise.all(ks.map(k => diario(CFG.temp, "max", muni, cambiaAnio(iniT, -k), cambiaAnio(ref, -k))))
+  ]);
+  if (lluvia.size < CFG.minCobertura) throw new Error(`Solo hay ${lluvia.size} de ${CFG.ventana} días con datos de lluvia. No alcanza para un cálculo confiable.`);
+  if (lluvia.size < CFG.ventana) avisos.push(`Faltan datos de lluvia en ${CFG.ventana - lluvia.size} de ${CFG.ventana} días. La lluvia acumulada puede estar subestimada.`);
+  const p30 = suma([...lluvia.values()]);
+  const hs = hl.filter(m => m.size >= CFG.minCobertura).map(m => suma([...m.values()]));
+  if (!hs.length) throw new Error("No hay histórico suficiente para calcular la anomalía.");
+  const p30h = media(hs);
+  let anom = 0;
+  if (p30h > 0) anom = (p30 - p30h) / p30h * 100; else avisos.push("El histórico es 0 mm; la anomalía se tomó como 0 %.");
+  if (p30h > 0 && p30h < 10) avisos.push(`El histórico es de solo ${p30h.toFixed(1)} mm; el porcentaje es muy inestable.`);
+  if (hs.length < CFG.anios) avisos.push(`Histórico con ${hs.length} de ${CFG.anios} años.`);
+  let anomT = 0, t7 = null, t7h = null;
+  const mt = ht.filter(m => m.size >= CFG.minCoberturaT).map(m => media([...m.values()]));
+  if (tm.size >= CFG.minCoberturaT && mt.length) { t7 = media([...tm.values()]); t7h = media(mt); anomT = t7 - t7h; }
+  else avisos.push("Sin datos de temperatura suficientes: la anomalía de Tmax se tomó como 0 °C.");
+  const secos = rachaSecos(lluvia, ref);
+  return { titulo: muni, ref, ini, lluvia, p30, p30h, anios: hs.length, anom, secos, anomT, t7, t7h, avisos, sim: false };
+}
+
+/* ===== Entrada manual y ejemplos ===== */
+function desdeValores(p30, p30h, secos, anomT, titulo, sim) {
+  const avisos = [];
+  let anom = 0;
+  if (p30h > 0) anom = (p30 - p30h) / p30h * 100; else avisos.push("El promedio histórico es 0 mm; la anomalía se tomó como 0 %.");
+  if (p30h > 0 && p30h < 10) avisos.push("Con un histórico tan bajo, el porcentaje de anomalía es muy inestable.");
+  if (sim) avisos.unshift("Datos simulados para demostración. No corresponden a ningún municipio real.");
+  return { titulo, ref: null, lluvia: null, p30, p30h, anios: null, anom, secos, anomT, t7: null, t7h: null, avisos, sim };
+}
+
+function serieSimulada(p30, secos) {
+  const n = CFG.ventana, h = n - secos, m = new Map();
+  const pesos = [...Array(h)].map((_, i) => 0.3 + Math.abs(Math.sin(i * 7.3 + 1)));
+  const sp = suma(pesos), extra = Math.max(0, p30 - h * CFG.umbralSeco * 1.05);
+  for (let i = 0; i < n; i++) m.set("d" + i, i < h ? CFG.umbralSeco * 1.05 + pesos[i] / sp * extra : 0);
+  return m;
+}
+const ESCENARIOS = [
+  { n: "Ejemplo simulado: amenaza baja", p30: 55, h: 60, s: 3, t: 0.4 },
+  { n: "Ejemplo simulado: amenaza moderada", p30: 38, h: 60, s: 9, t: 0.8 },
+  { n: "Ejemplo simulado: amenaza alta", p30: 18, h: 60, s: 17, t: 1.1 },
+  { n: "Ejemplo simulado: sube de escalón", p30: 40, h: 60, s: 10, t: 2.5 }
+];
+
+/* ===== Pantalla final ===== */
+let ultimo = null;
+function pintar(d) {
+  d.r = nivelAmenaza(d.anom, d.secos, d.anomT);
+  ultimo = d;
+  $("salida").classList.remove("hidden");
+  $("t-muni").innerHTML = "";
+  $("t-muni").append(d.titulo);
+  if (d.sim) { const s = document.createElement("span"); s.className = "sim"; s.textContent = "SIMULADO"; $("t-muni").append(s); }
+  const nombre = NIVELES[d.r.nivel];
+  $("nivel").textContent = "Amenaza " + nombre.toLowerCase(); $("nivel").className = "nivel " + nombre;
+  $("s-alto").classList.toggle("on", d.r.nivel === 2); $("s-mod").classList.toggle("on", d.r.nivel === 1); $("s-bajo").classList.toggle("on", d.r.nivel === 0);
+  $("nota-escalon").textContent = d.r.escalo
+    ? `Subió un escalón (desde ${NIVELES[d.r.base].toLowerCase()}) porque la temperatura máxima está ${d.anomT.toFixed(1)} °C sobre lo normal.`
+    : (d.anomT >= 2 ? "La temperatura máxima está alta, pero el nivel ya estaba en el máximo." : "");
+  $("c-p30").textContent = d.p30.toFixed(1);
+  $("c-anom").textContent = (d.anom > 0 ? "+" : "") + d.anom.toFixed(0) + " %";
+  $("c-secos").textContent = d.secos;
+  $("c-tmax").textContent = (d.anomT > 0 ? "+" : "") + d.anomT.toFixed(1);
+  $("actualizacion").textContent = d.ref ? `Datos hasta el ${d.ref} (ventana ${d.ini} a ${d.ref}).` : "";
+  const g = $("graf");
+  if (d.lluvia) {
+    g.classList.remove("hidden");
+    const claves = d.ref ? [...Array(CFG.ventana)].map((_, i) => sumaDias(d.ref, -(CFG.ventana - 1 - i))) : [...Array(CFG.ventana)].map((_, i) => "d" + i);
+    const max = Math.max(1, ...d.lluvia.values());
+    $("barras").innerHTML = claves.map(k => {
+      const v = d.lluvia.get(k);
+      if (v === undefined) return `<div class="barra falta" title="sin datos"></div>`;
+      return `<div class="barra${v < CFG.umbralSeco ? " seca" : ""}" style="height:${Math.max(3, v / max * 100)}%" title="${v.toFixed(1)} mm"></div>`;
+    }).join("");
+  } else g.classList.add("hidden");
+  $("avisos").innerHTML = d.avisos.map(a => `<li>${a}</li>`).join("");
+  $("detalle").textContent =
+`Lluvia 30 días (P30)  = ${d.p30.toFixed(1)} mm
+Histórico 30 días     = ${d.p30h.toFixed(1)} mm${d.anios ? " (promedio de " + d.anios + " años)" : ""}
+Anomalía = (P30 - hist) / hist x 100 = ${d.anom.toFixed(1)} %
+Días secos consecutivos = ${d.secos}
+Anomalía Tmax         = ${d.anomT.toFixed(1)} °C${d.t7 !== null ? "  (" + d.t7.toFixed(1) + " vs " + d.t7h.toFixed(1) + " °C)" : ""}
+
+Regla: Alto si anomalía <= -50 % y >= 15 días secos
+       Moderado si anomalía <= -25 % o >= 8 días secos
+       Bajo en el resto; si anomalía Tmax >= +2 °C sube un escalón.
+Nivel base: ${NIVELES[d.r.base]}  ->  Nivel final: ${NIVELES[d.r.nivel]}`;
+  comparar();
+  $("salida").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function comparar() {
+  const b = $("boletin").value, v = $("veredicto");
+  if (!ultimo || b === "") { v.textContent = ""; return; }
+  const dif = ultimo.r.nivel - Number(b);
+  v.textContent = dif === 0 ? "Coincide con el boletín." : `No coincide: el prototipo marca ${Math.abs(dif)} nivel${Math.abs(dif) > 1 ? "es" : ""} ${dif > 0 ? "por encima" : "por debajo"} del boletín.`;
+}
+$("boletin").addEventListener("change", comparar);
+
+function estado(t, err) { $("estado").textContent = t; $("estado").className = err ? "error" : ""; }
+
+/* ===== Pestañas y eventos ===== */
+function modo(m) {
+  for (const k of ["linea", "manual", "demo"]) {
+    $("tab-" + k).setAttribute("aria-selected", k === m);
+    $("p-" + k).classList.toggle("hidden", k !== m);
+  }
+  estado("");
+}
+$("tab-linea").onclick = () => modo("linea");
+$("tab-manual").onclick = () => modo("manual");
+$("tab-demo").onclick = () => modo("demo");
+
+$("btn-manual").onclick = () => {
+  const v = id => parseFloat($(id).value);
+  const p30 = v("m-p30"), h = v("m-hist"), s = parseInt($("m-secos").value, 10), t = v("m-tmax");
+  if ([p30, h, s, t].some(isNaN) || p30 < 0 || h < 0 || s < 0 || s > 30) { estado("Revisa los valores: lluvia y días secos no pueden ser negativos, y los días secos van de 0 a 30.", true); return; }
+  estado(""); pintar(desdeValores(p30, h, s, t, "Cálculo manual", false));
+};
+
+document.querySelectorAll(".esc").forEach(b => b.onclick = () => {
+  const e = ESCENARIOS[Number(b.dataset.e)];
+  const d = desdeValores(e.p30, e.h, e.s, e.t, e.n, true);
+  d.lluvia = serieSimulada(e.p30, e.s);
+  estado(""); pintar(d);
+});
+
+$("btn-linea").onclick = async () => {
+  const muni = $("muni").value.trim();
+  if (!muni) { estado("Escribe o elige un municipio.", true); return; }
+  $("btn-linea").disabled = true; estado("Consultando datos del IDEAM. Puede tardar unos segundos…");
+  try { pintar(await calcularEnLinea(muni, $("fecha").value)); estado(""); }
+  catch (err) {
+    $("salida").classList.add("hidden");
+    estado(err.name === "AbortError" ? "La consulta tardó demasiado. Intenta de nuevo."
+      : err instanceof TypeError ? "No se pudo conectar con datos.gov.co. Si estás dentro de claude.ai, esa conexión está bloqueada: abre el archivo en tu navegador." : err.message, true);
+  } finally { $("btn-linea").disabled = false; }
+};
+
+/* Inicio: prueba la conexión; si falla, deja activa la entrada manual */
+(async function () {
+  $("p-linea").classList.add("hidden");
+  $("fecha").value = aStr(new Date()); $("fecha").max = aStr(new Date());
+  try {
+    const f = await soda(CFG.catalogo, { "$select": "municipio", "$where": `upper(departamento)='${CFG.depto}'`, "$group": "municipio", "$order": "municipio", "$limit": "500" }, 6000);
+    $("lista-muni").innerHTML = f.filter(x => x.municipio).map(x => `<option value="${x.municipio}">`).join("");
+    modo("linea");
+    estado(`${f.length} municipios en el catálogo. Elige uno y calcula.`);
+  } catch (e) {
+    modo("manual");
+    estado("Sin conexión a datos.gov.co desde aquí. Puedes ingresar valores o probar los ejemplos. Para datos reales, abre este archivo en tu navegador.");
+  }
+})();
+</script>
+</body>
+</html>
