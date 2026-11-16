@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Semáforo de amenaza por sequía e incendios</title>
+<style>
+:root{--ink:#14201f;--mute:#5b6b69;--bg:#eef2f1;--card:#fff;--line:#d3dcda;--deep:#0f3b3a;--bajo:#2e8b57;--mod:#e8a317;--alto:#d6362f;--seco:#b9a48a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{background:var(--deep);color:#fff;padding:24px 20px}
+header div,main,footer{max-width:900px;margin:0 auto}
+h1{margin:0 0 6px;font-size:1.5rem;line-height:1.2}
+header p{margin:0;color:#b8d3cf;max-width:62ch}
+main{padding:16px 20px}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.tab{flex:1;min-width:120px;padding:10px;border:1px solid var(--line);background:#fff;border-radius:8px;cursor:pointer;font:inherit;color:var(--ink)}
+.tab[aria-selected=true]{background:var(--deep);color:#fff;border-color:var(--deep)}
+.fila{display:flex;flex-wrap:wrap;gap:12px;align-items:end}
+label{display:flex;flex-direction:column;font-size:.85rem;color:var(--mute);gap:4px;flex:1;min-width:140px}
+input,button.go{font:inherit;padding:10px 11px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);width:100%}
+button.go{background:var(--deep);color:#fff;border-color:var(--deep);cursor:pointer;width:auto;min-width:160px}
+button.go:disabled{opacity:.6}
+button.esc{font:inherit;padding:10px 12px;border:1px solid var(--line);background:#fff;border-radius:8px;cursor:pointer;text-align:left;flex:1;min-width:150px}
+button.esc small{display:block;color:var(--mute)}
+:focus-visible{outline:3px solid #7cc4bb;outline-offset:2px}
+#estado{margin:10px 0 0;color:var(--mute);min-height:1.3em}
+#estado.error{color:var(--alto)}
+.hidden{display:none!important}
+.ayuda{font-size:.85rem;color:var(--mute);margin:0 0 12px}
+.resultado{display:grid;grid-template-columns:130px 1fr;gap:18px;align-items:center}
+@media(max-width:560px){.resultado{grid-template-columns:1fr}}
+.semaforo{background:#1d2a29;border-radius:40px;padding:12px;display:flex;flex-direction:column;gap:9px;align-items:center;width:96px;margin:0 auto}
+.luz{width:68px;height:68px;border-radius:50%;opacity:.18}
+.luz.on{opacity:1;box-shadow:0 0 22px 4px currentColor}
+.l-alto{background:var(--alto);color:var(--alto)}.l-mod{background:var(--mod);color:var(--mod)}.l-bajo{background:var(--bajo);color:var(--bajo)}
+.nivel{font-size:1.9rem;font-weight:700;margin:0;line-height:1.1}
+.nivel.Bajo{color:var(--bajo)}.nivel.Moderado{color:#a8740a}.nivel.Alto{color:var(--alto)}
+.sim{display:inline-block;background:#fff3cd;color:#7a5200;border:1px solid #f0d98a;border-radius:6px;padding:2px 8px;font-size:.8rem;margin-left:8px;vertical-align:middle}
+.cifras{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:14px 0 4px}
+.cifra{border-left:3px solid var(--line);padding-left:10px}
+.cifra b{display:block;font-size:1.35rem;font-variant-numeric:tabular-nums}
+.cifra span{font-size:.8rem;color:var(--mute)}
+.barras{display:flex;align-items:flex-end;gap:2px;height:80px;margin-top:10px}
+.barra{flex:1;background:#3b8f9a;border-radius:2px 2px 0 0}
+.barra.seca{background:var(--seco);height:3px!important}
+.barra.falta{background:repeating-linear-gradient(45deg,#fff,#fff 2px,#d3dcda 2px,#d3dcda 4px);height:100%!important}
+.leyenda{font-size:.8rem;color:var(--mute);margin:6px 0 0}
+.avisos{padding-left:20px;color:#7a5200;font-size:.9rem}
+summary{cursor:pointer;color:var(--deep);font-weight:600}
+pre{background:#f4f7f6;padding:12px;border-radius:6px;overflow-x:auto;font-size:.8rem}
+select{font:inherit;padding:10px;border:1px solid var(--line);border-radius:6px;background:#fff}
+#veredicto{font-weight:600;margin:0}
+footer{padding:0 20px 30px;font-size:.85rem;color:var(--mute)}
+</style>
+</head>
+<body>
+<header><div>
+<h1>Semáforo de amenaza por sequía e incendios</h1>
+<p>Plan piloto en Cundinamarca. Convierte datos de lluvia y temperatura del IDEAM en un nivel de amenaza: bajo, moderado o alto.</p>
+</div></header>
+
+<main>
+<div class="tabs" role="tablist">
+<button class="tab" role="tab" id="tab-linea" aria-selected="false">Datos del IDEAM</button>
+<button class="tab" role="tab" id="tab-manual" aria-selected="true">Ingresar valores</button>
+<button class="tab" role="tab" id="tab-demo" aria-selected="false">Ejemplos simulados</button>
+</div>
+
+<section class="panel" id="p-linea" class="hidden">
+<p class="ayuda">Consulta datos.gov.co en vivo. Funciona solo cuando abres este archivo en tu navegador (no dentro de claude.ai).</p>
+<div class="fila">
+<label>Municipio<input id="muni" list="lista-muni" placeholder="Elige o escribe" autocomplete="off"><datalist id="lista-muni"></datalist></label>
+<label>Fecha de consulta<input id="fecha" type="date"></label>
+<button class="go" id="btn-linea">Calcular con datos reales</button>
+</div>
+</section>
+
+<section class="panel" id="p-manual">
+<p class="ayuda">Escribe los valores que calculaste a partir de los datos del IDEAM. El semáforo aplica la regla del anteproyecto.</p>
+<div class="fila">
+<label>Lluvia acumulada 30 días (mm)<input id="m-p30" type="number" inputmode="decimal" min="0" step="0.1" value="18"></label>
+<label>Promedio histórico 30 días (mm)<input id="m-hist" type="number" inputmode="decimal" min="0" step="0.1" value="60"></label>
+<label>Días secos consecutivos<input id="m-secos" type="number" inputmode="numeric" min="0" max="30" step="1" value="17"></label>
+<label>Anomalía de Tmax (°C)<input id="m-tmax" type="number" inputmode="decimal" step="0.1" value="0.5"></label>
+<button class="go" id="btn-manual">Calcular semáforo</button>
+</div>
+</section>
+
+<section class="panel hidden" id="p-demo">
+<p class="ayuda">Casos inventados para probar cada nivel. No son datos reales del IDEAM.</p>
+<div class="fila">
+<button class="esc" data-e="0">Bajo<small>Lluvia casi normal</small></button>
+<button class="esc" data-e="1">Moderado<small>Déficit del 37 %, 9 días secos</small></button>
+<button class="esc" data-e="2">Alto<small>El ejemplo del anteproyecto</small></button>
+<button class="esc" data-e="3">Sube de escalón<small>Moderado + calor extremo</small></button>
+</div>
+</section>
+
+<p id="estado" role="status"></p>
+
+<section id="salida" class="hidden">
+<div class="panel">
+<h2 id="t-muni" style="margin:0 0 12px"></h2>
+<div class="resultado">
+<div class="semaforo" aria-hidden="true"><div class="luz l-alto" id="s-alto"></div><div class="luz l-mod"
